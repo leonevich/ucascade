@@ -36,12 +36,14 @@ import controller.model.DeleteBranchResult;
 import controller.model.MergeRequestResult;
 import controller.model.MergeRequestSimple;
 import controller.model.MergeRequestUcascadeState;
+import enums.MergeStrategy;
 import io.quarkus.info.BuildInfo;
 import io.quarkus.info.GitInfo;
 import io.quarkus.logging.Log;
 import io.quarkus.vertx.ConsumeEvent;
 import io.smallrye.common.annotation.Blocking;
 import io.vertx.mutiny.core.eventbus.EventBus;
+import se.sawano.java.text.AlphanumericComparator;
 import util.ConfigurationUtils;
 
 @ApplicationScoped
@@ -61,8 +63,8 @@ public class GitLabService {
 	@ConfigProperty(name = "gitlab.api.token.approver")
 	Optional<String> apiTokenApprover;
 
-	@ConfigProperty(name = "protected.branch.merge.strategy", defaultValue = "false")
-	boolean protectedBranchMergeStrategy;
+	@ConfigProperty(name = "merge.strategy", defaultValue = "configuration_file")
+	MergeStrategy mergeStrategy;
 
 	@Inject
 	GitInfo gitInfo;
@@ -212,9 +214,8 @@ public class GitLabService {
 	}
 
 	private void createAutoMr(CascadeResult result, String gitlabEventUUID, Long projectId, String prevMrSourceBranch, String sourceBranch, Long mrNumber, String mergeSha) {
-		Branch branch = getNextTargetBranch(gitlabEventUUID, projectId, sourceBranch, mergeSha);
-		if (branch != null) {
-			String nextMainBranch = branch.getName();
+		String nextMainBranch = getNextTargetBranch(gitlabEventUUID, projectId, sourceBranch, mergeSha);
+		if (nextMainBranch != null) {
 			if (haveDiff(gitlabEventUUID, projectId, mergeSha, nextMainBranch)) {
 				String tmpBranchName = "mr" + mrNumber + "_" + sourceBranch;
 				createBranch(gitlabEventUUID, projectId, tmpBranchName, mergeSha);
@@ -570,53 +571,61 @@ public class GitLabService {
 		}
 	}
 
-	private Branch getNextTargetBranch(String gitlabEventUUID, Long projectId, String sourceBranch, String mergeSha) {
-		if (protectedBranchMergeStrategy) {
-			return getNextTargetBranchFromProtectedBranches(gitlabEventUUID, projectId, sourceBranch, mergeSha);
-		} else {
-			return getNextTargetBranchFromBranchModel(gitlabEventUUID, projectId, sourceBranch, mergeSha);
-		}
+	private String getNextTargetBranch(String gitlabEventUUID, Long projectId, String sourceBranch, String mergeSha) {
+		return switch (mergeStrategy) {
+		case CONFIGURATION_FILE -> getNextTargetBranchFromBranchModel(gitlabEventUUID, projectId, sourceBranch, mergeSha);
+		case PROTECTED_BRANCHES -> getNextTargetBranchFromProtectedBranches(gitlabEventUUID, projectId, sourceBranch, mergeSha);
+		};
 	}
 
-	private Branch getNextTargetBranchFromBranchModel(String gitlabEventUUID, Long projectId, String sourceBranch, String mergeSha) {
+	private String getNextTargetBranchFromBranchModel(String gitlabEventUUID, Long projectId, String sourceBranch, String mergeSha) {
 		String branchModel = getBranchModelConfigurationFile(gitlabEventUUID, projectId, mergeSha);
 		String nextMainBranch = ConfigurationUtils.getNextTargetBranch(branchModel, sourceBranch);
-		Branch targetBranch = null;
+		String targetBranch = null;
 		if (nextMainBranch != null) {
-			targetBranch = getBranch(gitlabEventUUID, projectId, nextMainBranch);
-			if (!Branch.isValid(targetBranch)) {
+			Branch branch = getBranch(gitlabEventUUID, projectId, nextMainBranch);
+			if (!Branch.isValid(branch)) {
 				throw new IllegalStateException(String.format("GitlabEvent: '%s' | Branch named '%s' does not exist in projectId '%d'. Please check the ucascade configuration file.", gitlabEventUUID, nextMainBranch, projectId));
 			}
+			targetBranch = branch.getName();
 		}
 		return targetBranch;
 	}
 
-	private Branch getNextTargetBranchFromProtectedBranches(String gitlabEventUUID, Long projectId, String sourceBranch, String mergeSha) {
+	private String getNextTargetBranchFromProtectedBranches(String gitlabEventUUID, Long projectId, String sourceBranch, String mergeSha) {
 		try {
 			List<ProtectedBranch> protectedBranches = gitlab.getProtectedBranchesApi().getProtectedBranches(projectId);
+			List<String> sortedProtectedBranchNames = protectedBranches.stream()
+					.map(ProtectedBranch::getName)
+					.sorted(new AlphanumericComparator())
+					.toList();
 			boolean sourceBranchFounded = false;
-			Branch targetBranch = null;
+			String targetBranch = null;
 			boolean withWildcardRules = protectedBranches.stream().anyMatch(pb -> pb.getName().contains("*"));
 			if (withWildcardRules) {
 				outerLoop: for (ProtectedBranch protectedBranch : protectedBranches) {
 					String search = BRANCH_SEARCH_QUERY_PARAM_TEMPLATE.formatted(protectedBranch.getName());
 					List<Branch> branches = gitlab.getRepositoryApi().getBranches(projectId, search);
-					for (Branch branch : branches) {
+					List<String> sortedBranchNames = branches.stream()
+							.map(Branch::getName)
+							.sorted(new AlphanumericComparator())
+							.toList();
+					for (String branch : sortedBranchNames) {
 						if (sourceBranchFounded) {
 							targetBranch = branch;
 							break outerLoop;
 						}
-						if (branch.getName().equals(sourceBranch)) {
+						if (branch.equals(sourceBranch)) {
 							sourceBranchFounded = true;
 						}
 					}
 					sourceBranchFounded = false;
 				}
 			} else {
-				for (ProtectedBranch protectedBranch : protectedBranches) {
-					Branch branch = gitlab.getRepositoryApi().getBranch(projectId, protectedBranch.getName());
+				for (String protectedBranch : sortedProtectedBranchNames) {
+					Branch branch = gitlab.getRepositoryApi().getBranch(projectId, protectedBranch);
 					if (sourceBranchFounded) {
-						targetBranch = branch;
+						targetBranch = branch.getName();
 						break;
 					}
 					if (branch.getName().equals(sourceBranch)) {
