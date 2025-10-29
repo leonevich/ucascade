@@ -28,6 +28,7 @@ import org.gitlab4j.api.models.Assignee;
 import org.gitlab4j.api.models.Branch;
 import org.gitlab4j.api.models.MergeRequest;
 import org.gitlab4j.api.models.MergeRequestParams;
+import org.gitlab4j.api.models.ProtectedBranch;
 import org.gitlab4j.models.Constants.MergeRequestState;
 
 import controller.model.CascadeResult;
@@ -60,12 +61,16 @@ public class GitLabService {
 	@ConfigProperty(name = "gitlab.api.token.approver")
 	Optional<String> apiTokenApprover;
 
+	@ConfigProperty(name = "protected.branch.merge.strategy")
+	boolean protectedBranchMergeStrategy;
+
 	@Inject
 	GitInfo gitInfo;
 
 	@Inject
 	BuildInfo buildInfo;
 
+	private static final String BRANCH_SEARCH_QUERY_PARAM_TEMPLATE = "^%s$";
 	private static final String UCASCADE_CONFIGURATION_FILE = "ucascade.json";
 	private static final String UCASCADE_TAG = "[ucascade]";
 	private static final String UCASCADE_BRANCH_PATTERN_PREFIX = "^mr(\\d+)_";
@@ -207,14 +212,9 @@ public class GitLabService {
 	}
 
 	private void createAutoMr(CascadeResult result, String gitlabEventUUID, Long projectId, String prevMrSourceBranch, String sourceBranch, Long mrNumber, String mergeSha) {
-		String branchModel = getBranchModelConfigurationFile(gitlabEventUUID, projectId, mergeSha);
-		String nextMainBranch = ConfigurationUtils.getNextTargetBranch(branchModel, sourceBranch);
-
-		if (nextMainBranch != null) {
-			Branch branch = getBranch(gitlabEventUUID, projectId, nextMainBranch);
-			if (!Branch.isValid(branch)) {
-				throw new IllegalStateException(String.format("GitlabEvent: '%s' | Branch named '%s' does not exist in project '%d'. Please check the ucascade configuration file.", gitlabEventUUID, nextMainBranch, projectId));
-			}
+		Branch branch = getNextTargetBranch(gitlabEventUUID, projectId, sourceBranch, mergeSha);
+		if (branch != null) {
+			String nextMainBranch = branch.getName();
 			if (haveDiff(gitlabEventUUID, projectId, mergeSha, nextMainBranch)) {
 				String tmpBranchName = "mr" + mrNumber + "_" + sourceBranch;
 				createBranch(gitlabEventUUID, projectId, tmpBranchName, mergeSha);
@@ -567,6 +567,66 @@ public class GitLabService {
 			return new String(Base64.getDecoder().decode(encodedContent));
 		} catch (GitLabApiException e) {
 			throw new IllegalStateException(String.format("GitlabEvent: '%s' | Configuration file '%s' not found in remote repository at '%s'", gitlabEventUUID, UCASCADE_CONFIGURATION_FILE, ref), e);
+		}
+	}
+
+	private Branch getNextTargetBranch(String gitlabEventUUID, Long projectId, String sourceBranch, String mergeSha) {
+		if (protectedBranchMergeStrategy) {
+			return getNextTargetBranchFromProtectedBranches(gitlabEventUUID, projectId, sourceBranch, mergeSha);
+		} else {
+			return getNextTargetBranchFromBranchModel(gitlabEventUUID, projectId, sourceBranch, mergeSha);
+		}
+	}
+
+	private Branch getNextTargetBranchFromBranchModel(String gitlabEventUUID, Long projectId, String sourceBranch, String mergeSha) {
+		String branchModel = getBranchModelConfigurationFile(gitlabEventUUID, projectId, mergeSha);
+		String nextMainBranch = ConfigurationUtils.getNextTargetBranch(branchModel, sourceBranch);
+		Branch targetBranch = null;
+		if (nextMainBranch != null) {
+			targetBranch = getBranch(gitlabEventUUID, projectId, nextMainBranch);
+			if (!Branch.isValid(targetBranch)) {
+				throw new IllegalStateException(String.format("GitlabEvent: '%s' | Branch named '%s' does not exist in projectId '%d'. Please check the ucascade configuration file.", gitlabEventUUID, nextMainBranch, projectId));
+			}
+		}
+		return targetBranch;
+	}
+
+	private Branch getNextTargetBranchFromProtectedBranches(String gitlabEventUUID, Long projectId, String sourceBranch, String mergeSha) {
+		try {
+			List<ProtectedBranch> protectedBranches = gitlab.getProtectedBranchesApi().getProtectedBranches(projectId);
+			boolean sourceBranchFounded = false;
+			Branch targetBranch = null;
+			boolean withWildcardRules = protectedBranches.stream().anyMatch(pb -> pb.getName().contains("*"));
+			if (withWildcardRules) {
+				outerLoop: for (ProtectedBranch protectedBranch : protectedBranches) {
+					String search = BRANCH_SEARCH_QUERY_PARAM_TEMPLATE.formatted(protectedBranch.getName());
+					List<Branch> branches = gitlab.getRepositoryApi().getBranches(projectId, search);
+					for (Branch branch : branches) {
+						if (sourceBranchFounded) {
+							targetBranch = branch;
+							break outerLoop;
+						}
+						if (branch.getName().equals(sourceBranch)) {
+							sourceBranchFounded = true;
+						}
+					}
+					sourceBranchFounded = false;
+				}
+			} else {
+				for (ProtectedBranch protectedBranch : protectedBranches) {
+					Branch branch = gitlab.getRepositoryApi().getBranch(projectId, protectedBranch.getName());
+					if (sourceBranchFounded) {
+						targetBranch = branch;
+						break;
+					}
+					if (branch.getName().equals(sourceBranch)) {
+						sourceBranchFounded = true;
+					}
+				}
+			}
+			return targetBranch;
+		} catch (GitLabApiException e) {
+			throw new IllegalStateException(String.format("GitlabEvent: '%s' | Cannot retrieve protected branch '%s'", gitlabEventUUID, sourceBranch), e);
 		}
 	}
 
