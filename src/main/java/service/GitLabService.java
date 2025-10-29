@@ -61,7 +61,7 @@ public class GitLabService {
 	@ConfigProperty(name = "gitlab.api.token.approver")
 	Optional<String> apiTokenApprover;
 
-	@ConfigProperty(name = "protected.branch.merge.strategy")
+	@ConfigProperty(name = "protected.branch.merge.strategy", defaultValue = "false")
 	boolean protectedBranchMergeStrategy;
 
 	@Inject
