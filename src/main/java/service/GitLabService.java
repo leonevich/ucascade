@@ -290,6 +290,8 @@ public class GitLabService {
 		try {
 			Log.infof("GitlabEvent: '%s' | Creating MR: '%s' -> '%s'", gitlabEventUUID, sourceBranch, targetBranch);
 			MergeRequestApi mrApi = gitlab.getMergeRequestApi();
+			MergeRequest prevMrRules = mrApi.getMergeRequest(project, prevMergedMRNumber);
+			mrParams.withSquash(prevMrRules.getSquash());
 			mr = mrApi.createMergeRequest(project, mrParams);
 		} catch (GitLabApiException e) {
 			throw new IllegalStateException(String.format("GitlabEvent: '%s' | Cannot create merge request from '%s' into '%s' in project '%d'", gitlabEventUUID, sourceBranch, targetBranch, project), e);
@@ -425,7 +427,8 @@ public class GitLabService {
 			String targetBranch = mr.getTargetBranch();
 			AcceptMergeRequestParams acceptMrParams = new AcceptMergeRequestParams()
 					.withMergeCommitMessage(String.format("%s Automatic merge: '%s' -> '%s'", UCASCADE_TAG, sourceBranchPretty, targetBranch))
-					.withShouldRemoveSourceBranch(mr.getForceRemoveSourceBranch());
+					.withShouldRemoveSourceBranch(mr.getForceRemoveSourceBranch())
+					.withSquash(mr.getSquash());
 
 			int countDown = MAX_RETRY_ATTEMPTS;
 			while (state != MergeRequestUcascadeState.MERGED && countDown-- > 0) {
