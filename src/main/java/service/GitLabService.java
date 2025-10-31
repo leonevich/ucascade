@@ -607,6 +607,7 @@ public class GitLabService {
 					String search = BRANCH_SEARCH_QUERY_PARAM_TEMPLATE.formatted(protectedBranch.getName());
 					List<Branch> branches = gitlab.getRepositoryApi().getBranches(projectId, search);
 					List<String> sortedBranchNames = branches.stream()
+							.filter(Branch::isValid)
 							.map(Branch::getName)
 							.sorted(new AlphanumericComparator())
 							.toList();
@@ -624,12 +625,14 @@ public class GitLabService {
 			} else {
 				for (String protectedBranch : sortedProtectedBranchNames) {
 					Branch branch = gitlab.getRepositoryApi().getBranch(projectId, protectedBranch);
-					if (sourceBranchFounded) {
-						targetBranch = branch.getName();
-						break;
-					}
-					if (branch.getName().equals(sourceBranch)) {
-						sourceBranchFounded = true;
+					if (Branch.isValid(branch)) {
+						if (sourceBranchFounded) {
+							targetBranch = branch.getName();
+							break;
+						}
+						if (branch.getName().equals(sourceBranch)) {
+							sourceBranchFounded = true;
+						}
 					}
 				}
 			}
