@@ -573,12 +573,12 @@ public class GitLabService {
 
 	private String getNextTargetBranch(String gitlabEventUUID, Long projectId, String sourceBranch, String mergeSha) {
 		return switch (mergeStrategy) {
-		case CONFIGURATION_FILE -> getNextTargetBranchFromBranchModel(gitlabEventUUID, projectId, sourceBranch, mergeSha);
+		case CONFIGURATION_FILE -> getNextTargetBranchFromConfigurationFile(gitlabEventUUID, projectId, sourceBranch, mergeSha);
 		case PROTECTED_BRANCHES -> getNextTargetBranchFromProtectedBranches(gitlabEventUUID, projectId, sourceBranch, mergeSha);
 		};
 	}
 
-	private String getNextTargetBranchFromBranchModel(String gitlabEventUUID, Long projectId, String sourceBranch, String mergeSha) {
+	private String getNextTargetBranchFromConfigurationFile(String gitlabEventUUID, Long projectId, String sourceBranch, String mergeSha) {
 		String branchModel = getBranchModelConfigurationFile(gitlabEventUUID, projectId, mergeSha);
 		String nextMainBranch = ConfigurationUtils.getNextTargetBranch(branchModel, sourceBranch);
 		String targetBranch = null;
